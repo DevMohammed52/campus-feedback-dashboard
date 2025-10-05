@@ -1,9 +1,9 @@
 import streamlit as st
-from textblob import TextBlob
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+from transformers import pipeline
 
 # Page configuration
 st.set_page_config(
@@ -29,9 +29,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# Load sentiment model (cached so it only loads once)
+@st.cache_resource
+def load_sentiment_model():
+    return pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", device=-1)
+
+sentiment_analyzer = load_sentiment_model()
+
 # Title
 st.markdown('<p class="main-header">📝 Campus Feedback Sentiment Dashboard</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Share your feedback about campus or class issues - we analyze the sentiment in real-time!</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">AI-Powered Sentiment Analysis for Campus Issues | Powered by Hugging Face Transformers 🤗</p>', unsafe_allow_html=True)
 
 # Initialize session state to store feedback
 if 'feedback_data' not in st.session_state:
@@ -58,20 +65,28 @@ with col1:
         
         if submitted:
             if feedback_text.strip():
-                # Analyze sentiment using TextBlob
-                blob = TextBlob(feedback_text)
-                polarity = blob.sentiment.polarity
-                
-                # Classify sentiment
-                if polarity > 0.1:
-                    sentiment = "Positive"
-                    emoji = "😊"
-                elif polarity < -0.1:
-                    sentiment = "Negative"
-                    emoji = "😞"
-                else:
-                    sentiment = "Neutral"
-                    emoji = "😐"
+                # Analyze sentiment using Hugging Face
+                with st.spinner("🤖 Analyzing sentiment with AI..."):
+                    result = sentiment_analyzer(feedback_text[:512])[0]  # Limit to 512 chars for speed
+                    
+                    # Map labels to sentiment
+                    label = result['label']
+                    confidence = result['score']
+                    
+                    if label == 'POSITIVE':
+                        sentiment = "Positive"
+                        emoji = "😊"
+                        color = "#2ecc71"
+                    else:
+                        sentiment = "Negative"
+                        emoji = "😞"
+                        color = "#e74c3c"
+                    
+                    # For neutral detection (low confidence on either side)
+                    if confidence < 0.70:
+                        sentiment = "Neutral"
+                        emoji = "😐"
+                        color = "#f39c12"
                 
                 # Store feedback
                 feedback_entry = {
@@ -79,12 +94,13 @@ with col1:
                     'category': category,
                     'feedback': feedback_text,
                     'sentiment': sentiment,
-                    'polarity': round(polarity, 2),
+                    'confidence': round(confidence * 100, 1),
                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 
                 st.session_state.feedback_data.append(feedback_entry)
                 st.success(f"✅ Feedback submitted! Sentiment: **{sentiment}** {emoji}")
+                st.info(f"🎯 AI Confidence: **{round(confidence * 100, 1)}%**")
             else:
                 st.warning("⚠️ Please enter some feedback before submitting!")
 
@@ -98,7 +114,7 @@ with col2:
         # Sentiment distribution
         sentiment_counts = df['sentiment'].value_counts()
         
-        # Create three columns for metrics
+        # Create metrics row
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
         
         with metric_col1:
@@ -152,13 +168,25 @@ with col2:
             )
             st.plotly_chart(fig_bar, use_container_width=True)
         
+        # Additional visualization: Sentiment by Category
+        st.markdown("### 📈 Sentiment Breakdown by Category")
+        category_sentiment = pd.crosstab(df['category'], df['sentiment'])
+        fig_stacked = px.bar(
+            category_sentiment,
+            barmode='stack',
+            title="Sentiment Distribution Across Categories",
+            color_discrete_map={'Positive': '#2ecc71', 'Neutral': '#f39c12', 'Negative': '#e74c3c'}
+        )
+        fig_stacked.update_layout(height=300)
+        st.plotly_chart(fig_stacked, use_container_width=True)
+        
     else:
         st.info("📭 No feedback submitted yet. Be the first to share your thoughts!")
 
 # Admin section - password protected to view detailed feedback
 st.markdown("---")
 with st.expander("🔐 Admin View - Detailed Feedback"):
-    password = st.text_input("Enter Admin Password", type="password")
+    password = st.text_input("Enter Admin Password", type="password", key="admin_password")
     
     if password == "admin123":  # Change this password!
         if st.session_state.feedback_data:
@@ -178,7 +206,7 @@ with st.expander("🔐 Admin View - Detailed Feedback"):
             
             # Display table with better formatting
             st.dataframe(
-                df_filtered[['timestamp', 'name', 'category', 'sentiment', 'feedback']],
+                df_filtered[['timestamp', 'name', 'category', 'sentiment', 'confidence', 'feedback']],
                 use_container_width=True,
                 hide_index=True
             )
@@ -186,3 +214,7 @@ with st.expander("🔐 Admin View - Detailed Feedback"):
             st.info("No feedback data available yet.")
     elif password:
         st.error("❌ Incorrect password!")
+
+# Footer
+st.markdown("---")
+st.markdown("*Powered by Hugging Face DistilBERT | Built with Streamlit*")
