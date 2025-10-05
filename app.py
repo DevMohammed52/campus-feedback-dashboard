@@ -6,7 +6,6 @@ from datetime import datetime
 from transformers import pipeline
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import time
 
 # Page configuration
 st.set_page_config(
@@ -92,12 +91,6 @@ if 'feedback_data' not in st.session_state:
 if 'admin_authenticated' not in st.session_state:
     st.session_state.admin_authenticated = False
 
-if 'last_submit_time' not in st.session_state:
-    st.session_state.last_submit_time = 0
-
-if 'submitted_feedbacks' not in st.session_state:
-    st.session_state.submitted_feedbacks = set()
-
 # Sidebar
 with st.sidebar:
     st.title("Navigation")
@@ -149,62 +142,36 @@ if mode == "Student View":
             
             if submitted:
                 if feedback_text.strip():
-                    # Check rate limit (2 minutes)
-                    current_time = time.time()
-                    time_since_last = current_time - st.session_state.last_submit_time
-                    
-                    if time_since_last < 120:
-                        wait_time = int(120 - time_since_last)
-                        st.warning(f"Please wait {wait_time} seconds before submitting again.")
-                    else:
-                        # Check for duplicate feedback
-                        feedback_hash = hash(feedback_text.lower().strip())
+                    with st.spinner("Analyzing sentiment..."):
+                        result = sentiment_analyzer(feedback_text[:512])[0]
                         
-                        if feedback_hash in st.session_state.submitted_feedbacks:
-                            st.error("This feedback has already been submitted!")
+                        label = result['label']
+                        confidence = result['score']
+                        
+                        if label == 'POSITIVE':
+                            sentiment = "Positive"
                         else:
-                            with st.spinner("Analyzing sentiment..."):
-                                result = sentiment_analyzer(feedback_text[:512])[0]
-                                
-                                label = result['label']
-                                confidence = result['score']
-                                
-                                if label == 'POSITIVE':
-                                    sentiment = "Positive"
-                                else:
-                                    sentiment = "Negative"
-                                
-                                if confidence < 0.70:
-                                    sentiment = "Neutral"
-                            
-                            feedback_entry = {
-                                'name': name if name else "Anonymous",
-                                'category': category,
-                                'feedback': feedback_text,
-                                'sentiment': sentiment,
-                                'confidence': round(confidence * 100, 1),
-                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            }
-                            
-                            if save_data_to_sheets(feedback_entry):
-                                st.session_state.feedback_data.append(feedback_entry)
-                                st.session_state.last_submit_time = current_time
-                                st.session_state.submitted_feedbacks.add(feedback_hash)
-                                st.success("Thank you! Your feedback has been recorded.")
-                            else:
-                                st.error("Failed to save feedback. Please try again.")
+                            sentiment = "Negative"
+                        
+                        if confidence < 0.70:
+                            sentiment = "Neutral"
+                    
+                    feedback_entry = {
+                        'name': name if name else "Anonymous",
+                        'category': category,
+                        'feedback': feedback_text,
+                        'sentiment': sentiment,
+                        'confidence': round(confidence * 100, 1),
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    
+                    if save_data_to_sheets(feedback_entry):
+                        st.session_state.feedback_data.append(feedback_entry)
+                        st.success("Thank you! Your feedback has been recorded.")
+                    else:
+                        st.error("Failed to save feedback. Please try again.")
                 else:
                     st.warning("Please enter some feedback before submitting!")
-        
-        # Anti-spam info
-        with st.expander("Anti-Spam Measures"):
-            st.markdown("""
-            **Security Features Implemented:**
-            - 2-minute cooldown between submissions
-            - Duplicate feedback detection
-            - Rate limiting to prevent spam
-            - In production: Would integrate with student portal authentication
-            """)
     
     with col2:
         st.subheader("Community Feedback Overview")
@@ -220,7 +187,8 @@ if mode == "Student View":
             sent_col1, sent_col2, sent_col3 = st.columns(3)
             
             with sent_col1:
-                st.metric("Positive", sentiment_counts.get('Positive', 0))
+                st.metric("Positive", sentiment_counts.get('Positive', 0), 
+                         label_visibility="visible")
             with sent_col2:
                 st.metric("Neutral", sentiment_counts.get('Neutral', 0))
             with sent_col3:
@@ -229,7 +197,7 @@ if mode == "Student View":
             st.markdown("---")
             
             # Category breakdown
-            st.markdown("### Top Issues by Category")
+            st.markdown("### Issues by Category")
             category_counts = df['category'].value_counts().head(5)
             
             for cat, count in category_counts.items():
@@ -259,125 +227,6 @@ if mode == "Student View":
             
         else:
             st.info("No feedback data yet. Be the first to share!")
-
-# ADMIN VIEW
-elif mode == "Admin View" and st.session_state.admin_authenticated:
-    st.markdown("---")
-    
-    if len(st.session_state.feedback_data) > 0:
-        df = pd.DataFrame(st.session_state.feedback_data)
-        df['confidence'] = pd.to_numeric(df['confidence'], errors='coerce')
-        
-        # Key Metrics
-        st.subheader("Dashboard Overview")
-        metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
-        
-        sentiment_counts = df['sentiment'].value_counts()
-        
-        with metric_col1:
-            st.metric("Total Feedback", len(df))
-        with metric_col2:
-            st.metric("Positive", sentiment_counts.get('Positive', 0), 
-                     delta=f"{sentiment_counts.get('Positive', 0)/len(df)*100:.1f}%")
-        with metric_col3:
-            st.metric("Neutral", sentiment_counts.get('Neutral', 0),
-                     delta=f"{sentiment_counts.get('Neutral', 0)/len(df)*100:.1f}%")
-        with metric_col4:
-            st.metric("Negative", sentiment_counts.get('Negative', 0),
-                     delta=f"{sentiment_counts.get('Negative', 0)/len(df)*100:.1f}%")
-        with metric_col5:
-            avg_confidence = df['confidence'].mean()
-            st.metric("Avg Confidence", f"{avg_confidence:.1f}%")
-        
-        st.markdown("---")
-        
-        # Visualizations
-        viz_col1, viz_col2, viz_col3 = st.columns(3)
-        
-        with viz_col1:
-            colors = {'Positive': '#2ecc71', 'Neutral': '#f39c12', 'Negative': '#e74c3c'}
-            color_map = [colors[sent] for sent in sentiment_counts.index]
-            
-            fig_pie = go.Figure(data=[go.Pie(
-                labels=sentiment_counts.index,
-                values=sentiment_counts.values,
-                hole=0.4,
-                marker=dict(colors=color_map),
-                textinfo='label+percent',
-                textfont_size=14
-            )])
-            fig_pie.update_layout(
-                title="Sentiment Distribution",
-                showlegend=True,
-                height=350,
-                margin=dict(t=50, b=0, l=0, r=0)
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-        
-        with viz_col2:
-            category_counts = df['category'].value_counts()
-            fig_bar = px.bar(
-                x=category_counts.index,
-                y=category_counts.values,
-                labels={'x': 'Category', 'y': 'Count'},
-                title="Feedback by Category",
-                color=category_counts.values,
-                color_continuous_scale='Viridis'
-            )
-            fig_bar.update_layout(showlegend=False, height=350, margin=dict(t=50, b=0, l=0, r=0))
-            st.plotly_chart(fig_bar, use_container_width=True)
-        
-        with viz_col3:
-            df['date'] = pd.to_datetime(df['timestamp']).dt.date
-            daily_counts = df.groupby('date').size().reset_index(name='count')
-            fig_line = px.line(daily_counts, x='date', y='count', title="Feedback Trend Over Time", markers=True)
-            fig_line.update_layout(height=350, margin=dict(t=50, b=0, l=0, r=0))
-            st.plotly_chart(fig_line, use_container_width=True)
-        
-        # Category sentiment breakdown
-        st.subheader("Advanced Analytics")
-        category_sentiment = pd.crosstab(df['category'], df['sentiment'])
-        fig_stacked = px.bar(
-            category_sentiment, barmode='stack', title="Sentiment Breakdown by Category",
-            color_discrete_map={'Positive': '#2ecc71', 'Neutral': '#f39c12', 'Negative': '#e74c3c'}, height=400
-        )
-        st.plotly_chart(fig_stacked, use_container_width=True)
-        
-        st.markdown("---")
-        
-        # Filters
-        st.subheader("Detailed Feedback Records")
-        filter_col1, filter_col2, filter_col3 = st.columns(3)
-        
-        with filter_col1:
-            filter_sentiment = st.multiselect("Filter by Sentiment", options=['Positive', 'Neutral', 'Negative'],
-                                             default=['Positive', 'Neutral', 'Negative'])
-        with filter_col2:
-            filter_category = st.multiselect("Filter by Category", options=df['category'].unique().tolist(),
-                                            default=df['category'].unique().tolist())
-        with filter_col3:
-            sort_by = st.selectbox("Sort by", ["Newest First", "Oldest First", "Highest Confidence", "Lowest Confidence"])
-        
-        df_filtered = df[df['sentiment'].isin(filter_sentiment) & df['category'].isin(filter_category)]
-        
-        if sort_by == "Newest First":
-            df_filtered = df_filtered.sort_values('timestamp', ascending=False)
-        elif sort_by == "Oldest First":
-            df_filtered = df_filtered.sort_values('timestamp', ascending=True)
-        elif sort_by == "Highest Confidence":
-            df_filtered = df_filtered.sort_values('confidence', ascending=False)
-        else:
-            df_filtered = df_filtered.sort_values('confidence', ascending=True)
-        
-        st.write(f"**Showing {len(df_filtered)} of {len(df)} feedback entries**")
-        st.dataframe(df_filtered[['timestamp', 'name', 'category', 'sentiment', 'confidence', 'feedback']],
-                    use_container_width=True, hide_index=True, height=400)
-        
-        # Download
-        st.download_button("Download Full Dataset (CSV)", data=df.to_csv(index=False).encode('utf-8'),
-                          file_name=f"feedback_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv")
-    else:
-        st.info("No feedback data available yet. Waiting for student submissions...")
 
 st.markdown("---")
 st.caption("Powered by Hugging Face DistilBERT | Data stored in Google Sheets")
