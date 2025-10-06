@@ -228,5 +228,127 @@ if mode == "Student View":
         else:
             st.info("No feedback data yet. Be the first to share!")
 
+
+# ADMIN VIEW
+elif mode == "Admin View" and st.session_state.admin_authenticated:
+    st.markdown("---")
+    
+    if len(st.session_state.feedback_data) > 0:
+        df = pd.DataFrame(st.session_state.feedback_data)
+        
+        # Ensure confidence is numeric
+        df['confidence'] = pd.to_numeric(df['confidence'], errors='coerce')
+        
+        # Key Metrics
+        st.subheader("Dashboard Overview")
+        metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
+        
+        sentiment_counts = df['sentiment'].value_counts()
+        
+        with metric_col1:
+            st.metric("Total Feedback", len(df))
+        with metric_col2:
+            st.metric("Positive", sentiment_counts.get('Positive', 0), 
+                     delta=f"{sentiment_counts.get('Positive', 0)/len(df)*100:.1f}%")
+        with metric_col3:
+            st.metric("Neutral", sentiment_counts.get('Neutral', 0),
+                     delta=f"{sentiment_counts.get('Neutral', 0)/len(df)*100:.1f}%")
+        with metric_col4:
+            st.metric("Negative", sentiment_counts.get('Negative', 0),
+                     delta=f"{sentiment_counts.get('Negative', 0)/len(df)*100:.1f}%")
+        with metric_col5:
+            avg_confidence = df['confidence'].mean()
+            st.metric("Avg Confidence", f"{avg_confidence:.1f}%")
+        
+        st.markdown("---")
+        
+        # Visualizations (keeping your existing charts)
+        viz_col1, viz_col2, viz_col3 = st.columns(3)
+        
+        with viz_col1:
+            colors = {'Positive': '#2ecc71', 'Neutral': '#f39c12', 'Negative': '#e74c3c'}
+            color_map = [colors[sent] for sent in sentiment_counts.index]
+            
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=sentiment_counts.index,
+                values=sentiment_counts.values,
+                hole=0.4,
+                marker=dict(colors=color_map),
+                textinfo='label+percent',
+                textfont_size=14
+            )])
+            fig_pie.update_layout(
+                title="Sentiment Distribution",
+                showlegend=True,
+                height=350,
+                margin=dict(t=50, b=0, l=0, r=0)
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        
+        with viz_col2:
+            category_counts = df['category'].value_counts()
+            fig_bar = px.bar(
+                x=category_counts.index,
+                y=category_counts.values,
+                labels={'x': 'Category', 'y': 'Count'},
+                title="Feedback by Category",
+                color=category_counts.values,
+                color_continuous_scale='Viridis'
+            )
+            fig_bar.update_layout(showlegend=False, height=350, margin=dict(t=50, b=0, l=0, r=0))
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        with viz_col3:
+            df['date'] = pd.to_datetime(df['timestamp']).dt.date
+            daily_counts = df.groupby('date').size().reset_index(name='count')
+            fig_line = px.line(daily_counts, x='date', y='count', title="Feedback Trend Over Time", markers=True)
+            fig_line.update_layout(height=350, margin=dict(t=50, b=0, l=0, r=0))
+            st.plotly_chart(fig_line, use_container_width=True)
+        
+        # Category sentiment breakdown
+        st.subheader("Advanced Analytics")
+        category_sentiment = pd.crosstab(df['category'], df['sentiment'])
+        fig_stacked = px.bar(
+            category_sentiment, barmode='stack', title="Sentiment Breakdown by Category",
+            color_discrete_map={'Positive': '#2ecc71', 'Neutral': '#f39c12', 'Negative': '#e74c3c'}, height=400
+        )
+        st.plotly_chart(fig_stacked, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Filters
+        st.subheader("Detailed Feedback Records")
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        
+        with filter_col1:
+            filter_sentiment = st.multiselect("Filter by Sentiment", options=['Positive', 'Neutral', 'Negative'],
+                                             default=['Positive', 'Neutral', 'Negative'])
+        with filter_col2:
+            filter_category = st.multiselect("Filter by Category", options=df['category'].unique().tolist(),
+                                            default=df['category'].unique().tolist())
+        with filter_col3:
+            sort_by = st.selectbox("Sort by", ["Newest First", "Oldest First", "Highest Confidence", "Lowest Confidence"])
+        
+        df_filtered = df[df['sentiment'].isin(filter_sentiment) & df['category'].isin(filter_category)]
+        
+        if sort_by == "Newest First":
+            df_filtered = df_filtered.sort_values('timestamp', ascending=False)
+        elif sort_by == "Oldest First":
+            df_filtered = df_filtered.sort_values('timestamp', ascending=True)
+        elif sort_by == "Highest Confidence":
+            df_filtered = df_filtered.sort_values('confidence', ascending=False)
+        else:
+            df_filtered = df_filtered.sort_values('confidence', ascending=True)
+        
+        st.write(f"**Showing {len(df_filtered)} of {len(df)} feedback entries**")
+        st.dataframe(df_filtered[['timestamp', 'name', 'category', 'sentiment', 'confidence', 'feedback']],
+                    use_container_width=True, hide_index=True, height=400)
+        
+        # Download
+        st.download_button("Download Full Dataset (CSV)", data=df.to_csv(index=False).encode('utf-8'),
+                          file_name=f"feedback_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv")
+    else:
+        st.info("No feedback data available yet. Waiting for student submissions...")
+
 st.markdown("---")
 st.caption("Powered by Hugging Face DistilBERT | Data stored in Google Sheets")
